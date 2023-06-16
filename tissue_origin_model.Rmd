@@ -7,7 +7,7 @@ output: html_notebook
 
 ```{r}
 # create a vector of package names
-packages <- c("sva", "DESeq2","caret", "parallelly", "gower", "dplyr", "data.table", "edgeR", "pamr", "pROC", "lares", "ggplot2", "utils", "readr", "rlang", "ggrepel", "qvalue", "cowplot")
+packages <- c("sva", "DESeq2","caret", "parallelly", "gower", "dplyr", "data.table", "edgeR", "pamr", "pROC")
 
 # function to check and install packages
 check_and_install_package <- function(package_name) {
