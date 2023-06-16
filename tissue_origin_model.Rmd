@@ -1,0 +1,273 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Install and load required packages
+
+```{r}
+# create a vector of package names
+packages <- c("sva", "DESeq2","caret", "parallelly", "gower", "dplyr", "data.table", "edgeR", "pamr", "pROC", "lares", "ggplot2", "utils", "readr", "rlang", "ggrepel", "qvalue", "cowplot")
+
+# function to check and install packages
+check_and_install_package <- function(package_name) {
+  if (!require(package_name, character.only = TRUE)) {
+    install.packages(package_name, dependencies = TRUE, quiet = TRUE)
+    library(package_name, character.only = TRUE)
+  }
+}
+
+# load packages dynamically
+lapply(packages, check_and_install_package)
+
+
+```
+
+# load the combined expression data
+
+```{r}
+
+
+dat <- read.table("data.txt", sep = "\t", header = TRUE)
+
+rownames(dat) <- dat$Hugo_Symbol
+dat$Hugo_Symbol <- NULL
+
+#### Pheno data
+pheno <- read.table("batches.txt", sep = "\t", header = TRUE)
+
+
+# dim(pheno)
+
+
+```
+
+
+```{r}
+
+edata <- as.matrix(dat)
+
+batch <- pheno$Batch
+group <- pheno$group
+source <- pheno$source
+tissue_source <- pheno$tissue_source
+tissue <- pheno$tissue
+
+
+
+
+```
+
+# Batch effect removal using combat-seq
+
+```{r}
+
+adjusted <- read.table("data_ComBat.txt", sep = "\t", header = TRUE)
+
+rownames(adjusted) <- adjusted$Hugo_Symbol
+adjusted$Hugo_Symbol <- NULL
+
+adjusted <- as.matrix(adjusted)
+
+
+```
+
+
+# PCA Analysis
+
+```{r}
+
+ds <- DESeqDataSetFromMatrix(countData=adjusted, colData=pheno, design=~tissue)
+rld <- vst(ds, blind = FALSE)
+
+### PLOTS 
+
+tiff(height=400, width=400, file= "plotPCA_tissue_source.tiff") 
+plotPCA(rld, "tissue_source")
+while (!is.null(dev.list()))  dev.off()
+
+tiff(height=400, width=400, file= "plotPCA_tissue_Batch.tiff") 
+plotPCA(rld, "Batch")
+while (!is.null(dev.list()))  dev.off()
+
+tiff(height=400, width=400, file= "plotPCA_tissue_tissue.tiff")
+plotPCA(rld, "tissue")
+while (!is.null(dev.list()))  dev.off()
+
+tiff(height=400, width=400, file= "plotPCA_source.tiff")
+plotPCA(rld, "source")
+while (!is.null(dev.list()))  dev.off()
+
+tiff(height=400, width=400, file= "plotPCA_group.tiff")
+plotPCA(rld, "group")
+while (!is.null(dev.list()))  dev.off()
+
+
+
+
+```
+
+# filter
+
+```{r}
+### filter: remove rows with low expression values
+
+keep <- rowSums(adjusted > 100) >= 100
+expr.counts <- adjusted[keep,]
+
+### counts per million transformation
+
+expr.cpm <- cpm(expr.counts)
+
+### remove rows that have low expression values
+
+# keep <- rowSums(expr.cpm > 100) >= 10
+# expr.counts.cpm <- expr.cpm[keep,]
+
+# dim(expr.counts.cpm)
+
+```
+
+# Prepare data for training and validation
+
+```{r}
+
+pheno_train <- pheno %>% filter(!source %like% "CCLE")
+
+pheno_test <- pheno %>% filter(source %like% "CCLE")
+
+# dim(pheno_test)
+
+train_data <- expr.cpm[,which(colnames(expr.cpm) %like% 'TCGA' | colnames(expr.cpm) %like% 'GTEX')]
+# dim(train_data)
+
+validation_data <- expr.cpm[,which(colnames(expr.cpm) %like% 'LUNG' | colnames(expr.cpm) %like% 'BREAST')]
+# dim(validation_data)
+
+### transpose the data
+
+data_t <- as.matrix(t(train_data))
+# data_t1 <- cbind(data_t, pheno$tissue_source)
+
+# dim(data_t)
+
+batch_train <- factor(pheno_train$Batch)
+group_train <- factor(pheno_train$group)
+source_train <- factor(pheno_train$source)
+tissue_source_train <- factor(pheno_train$tissue_source)
+tissue_train <- factor(pheno_train$tissue)
+
+# summary(data_t)
+```
+
+# Run algorithms using 2-fold cross validation
+
+```{r}
+
+
+control <- trainControl(method="cv", number=2)
+metric <- "Accuracy"
+
+### train models
+
+
+# linear algorithms
+set.seed(7)
+fit.lda <- train(x=data_t, y=tissue_source_train , method="lda", metric=metric, trControl=control)
+
+# nonlinear algorithms
+# CART
+set.seed(7)
+fit.cart <- train(x=data_t, y=tissue_source_train , method="rpart", metric=metric, trControl=control)
+# kNN
+set.seed(7)
+fit.knn <- train(x=data_t, y=tissue_source_train , method="knn", metric=metric, trControl=control)
+
+# advanced algorithms
+# SVM
+set.seed(7)
+fit.svm <- train(x=data_t, y=tissue_source_train , method="svmRadial", metric=metric, trControl=control)
+# Random Forest
+set.seed(7)
+fit.rf <- train(x=data_t, y=tissue_source_train , method="rf", metric=metric, trControl=control)
+
+```
+
+# summarize accuracy of models
+
+```{r}
+
+results <- resamples(list(lda=fit.lda, cart=fit.cart, knn=fit.knn, svm=fit.svm, rf=fit.rf))
+summary(results)
+
+```
+
+# compare accuracy of models
+
+```{r}
+
+
+dotplot(results)
+
+
+tiff(height=400, width=400, file= "dotPlot.tiff")
+dotplot(results)
+while (!is.null(dev.list()))  dev.off()
+
+```
+
+# summarize Best Model
+
+```{r}
+
+print(fit.rf)
+
+data_test <- as.matrix(t(validation_data))
+tissue_source_test <- factor(pheno_test$tissue_source)
+
+```
+
+# estimate skill of rf on the validation dataset
+
+```{r}
+
+predictions <- predict(fit.rf, data_test)
+confusionMatrix <- confusionMatrix(predictions, tissue_source_test)
+
+confusionMatrix
+```
+
+ 
+ 
+```{r}
+
+predictions$predict <- names(predictions)[1:2][apply(predictions[,1:2], 1, which.max)]
+predictions$observed <- tissue_source_test
+head(predictions)
+
+
+```
+
+# 1 ROC curve
+
+```{r}
+# lung vs brca
+roc.lung <- roc(ifelse(predictions$observed=="lung", "lung", "brca"), as.numeric(predictions$lung))
+plot(roc.lung, col = "gray60")
+
+
+```
+
+
+```{r}
+
+tiff(height=400, width=400, file= "roc.tiff")
+plot(roc.lung, col = "gray60")
+while (!is.null(dev.list()))  dev.off()
+
+auc(roc.lung)
+# Area under the curve: 0.8112
+
+
+```
+
